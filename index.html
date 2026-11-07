@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solar Cell I–V Modelling</title>
+<meta name="description" content="Single-diode model of a 300 W PV module: parameter extraction, I–V/P–V curves, MPP, validation against the datasheet and fill-factor analysis.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<script>window.MathJax = { tex: { displayMath: [['\\[','\\]']] } };</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<style>
+:root {
+  --bg: #fbfaf7; --text: #1f1e1c; --muted: #5e5d58; --rule: #e4e3df;
+  --accent: #2a78d6; --table-head: #f1efea;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1a1a19; --text: #f0efec; --muted: #c3c2b7; --rule: #3a3a37;
+           --accent: #6da7ec; --table-head: #262624; }
+  figure img { background: #fff; border-radius: 6px; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 17px/1.65 "Source Serif 4", Georgia, serif; }
+main { max-width: 760px; margin: 0 auto; padding: 48px 16px 96px; }
+header { border-bottom: 1px solid var(--rule); padding-bottom: 20px; margin-bottom: 8px; }
+header h1 { font: 600 2rem/1.2 Inter, system-ui, sans-serif; margin: 0 0 12px; letter-spacing: -0.01em; }
+.links { font: 14px Inter, system-ui, sans-serif; display: flex; gap: 16px; flex-wrap: wrap; }
+a { color: var(--accent); }
+h2, h3 { font-family: Inter, system-ui, sans-serif; line-height: 1.3; }
+h2 { font-size: 1.35rem; margin: 2.4em 0 0.6em; }
+h3 { font-size: 1.05rem; margin: 1.8em 0 0.4em; }
+code { font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+.table { overflow-x: auto; margin: 1.2em 0; }
+table { border-collapse: collapse; width: 100%; font: 14px/1.45 Inter, system-ui, sans-serif; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { background: var(--table-head); font-weight: 600; }
+figure { margin: 1.6em 0; }
+figure img { width: 100%; height: auto; display: block; }
+figcaption { font: 14px/1.5 Inter, system-ui, sans-serif; color: var(--muted); margin-top: 8px; }
+.math { overflow-x: auto; margin: 1em 0; }
+footer { margin-top: 64px; font: 13px Inter, system-ui, sans-serif; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Solar Cell I–V Curve Modelling: Project Report</h1>
+<div class="links">
+  <a href="https://github.com/YOUR-USERNAME/solar-iv-model">Code on GitHub</a>
+  <a href="https://colab.research.google.com/github/YOUR-USERNAME/solar-iv-model/blob/main/solar_iv_model.ipynb">Open the notebook in Colab</a>
+</div>
+</header>
+<h2 id="abstract">Abstract</h2>
+<p>A single-diode model of the Canadian Solar CS6K-300MS (300 W, 60-cell mono-Si) built from its datasheet predicts maximum power at NOCT within <strong>+2.4 %</strong> without being fitted to that point. The five model parameters were extracted with SciPy by solving five datasheet equations, and the implicit I–V equation was solved with both the Lambert W function and Newton–Raphson. The extracted parameters agree with pvlib's independent fit to better than 1e-6 %. The model reproduces the open-circuit voltage and short-circuit current temperature coefficients it was fitted to, but underestimates the magnitude of the maximum-power temperature coefficient by about 10 % (−0.353 vs −0.39 %/°C) and over-predicts low-irradiance efficiency (99.3 % vs 97.5 %). A parameter sweep shows how series and shunt resistance set the fill factor.</p>
+<h2 id="1-introduction-and-objectives">1. Introduction and objectives</h2>
+<p>A PV module datasheet gives performance at only a few operating points, but system design needs the full I–V curve at any irradiance and temperature. The single-diode equivalent circuit is the standard way to bridge that gap: five parameters, fitted once, describe the module everywhere.</p>
+<p>Objectives:</p>
+<ol>
+<li>Extract the five single-diode parameters from a real datasheet using numerical optimisation.</li>
+<li>Solve the implicit I–V equation robustly with two independent methods.</li>
+<li>Verify the implementation against the open-source library pvlib.</li>
+<li>Compute I–V and P–V curves and the maximum power point for 200–1000 W/m² and 0–75 °C.</li>
+<li>Validate the model against datasheet values it was not fitted to.</li>
+<li>Quantify how series and shunt resistance affect the fill factor.</li>
+</ol>
+<p>All code is in a single Python notebook (<a href="solar_iv_model.ipynb"><code>solar_iv_model.ipynb</code></a>) using NumPy, SciPy, pandas, Matplotlib and pvlib. It runs end to end in Google Colab.</p>
+<h2 id="2-theory">2. Theory</h2>
+<h3 id="21-single-diode-model">2.1 Single-diode model</h3>
+<p>The module is modelled as a current source (photocurrent) in parallel with a diode and a shunt resistance, all in series with a series resistance:</p>
+<div class="math">\[I = I_{ph} - I_0\left[\exp\left(\frac{V + I R_s}{a}\right) - 1\right] - \frac{V + I R_s}{R_{sh}}, \qquad a = n N_s \frac{kT}{q}\]</div>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Meaning</th>
+<th>Physical origin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>I_ph</td>
+<td>Photocurrent</td>
+<td>Carriers generated by absorbed light; proportional to irradiance</td>
+</tr>
+<tr>
+<td>I₀</td>
+<td>Diode saturation current</td>
+<td>Recombination in the junction; rises steeply with temperature</td>
+</tr>
+<tr>
+<td>n</td>
+<td>Ideality factor</td>
+<td>1 for pure diffusion current, towards 2 for depletion-region recombination</td>
+</tr>
+<tr>
+<td>R_s</td>
+<td>Series resistance</td>
+<td>Contacts, fingers, busbars, bulk and emitter resistance</td>
+</tr>
+<tr>
+<td>R_sh</td>
+<td>Shunt resistance</td>
+<td>Leakage paths across the junction (edge defects, crystal faults)</td>
+</tr>
+</tbody>
+</table></div>
+<p>N_s = 60 cells in series, so the modified ideality factor <em>a</em> lumps n, the cell count and the thermal voltage kT/q (25.7 mV at 25 °C).</p>
+<h3 id="22-explicit-solution-with-lambert-w">2.2 Explicit solution with Lambert W</h3>
+<p>The current appears on both sides, so the equation is implicit. It can be rearranged into closed form using the Lambert W function, the inverse of w·eʷ:</p>
+<div class="math">\[I = \frac{R_{sh}(I_{ph}+I_0) - V}{R_s+R_{sh}} - \frac{a}{R_s}\,W(\theta), \qquad \theta = \frac{R_s R_{sh} I_0}{a(R_s+R_{sh})}\exp\left[\frac{R_{sh}(R_s I_{ph}+R_s I_0+V)}{a(R_s+R_{sh})}\right]\]</div>
+<p>Near open circuit the exponent in θ reaches several thousand, far beyond double-precision range. The implementation therefore works with ln θ and, when it exceeds 700, solves w + ln w = ln θ by Newton iteration instead of evaluating θ.</p>
+<h3 id="23-translation-to-other-conditions-de-soto-model">2.3 Translation to other conditions (De Soto model)</h3>
+<p>Parameters fitted at standard test conditions (1000 W/m², 25 °C) are translated to irradiance G and cell temperature T with the De Soto (2006) relations:</p>
+<div class="math">\[I_{ph} = \frac{G}{G_{ref}}\left[I_{ph,ref} + \alpha_{sc}(T - T_{ref})\right], \qquad a = a_{ref}\frac{T}{T_{ref}}, \qquad R_{sh} = R_{sh,ref}\frac{G_{ref}}{G}\]</div>
+<div class="math">\[I_0 = I_{0,ref}\left(\frac{T}{T_{ref}}\right)^3 \exp\left[\frac{E_{g,ref}}{kT_{ref}} - \frac{E_g}{kT}\right], \qquad E_g = 1.121\ \text{eV}\left[1 - 0.0002677\,(T - T_{ref})\right]\]</div>
+<p>R_s is held constant. The strong temperature dependence of I₀ through the silicon bandgap is what makes V_oc fall as the cell heats up.</p>
+<h3 id="24-fill-factor">2.4 Fill factor</h3>
+<p>The fill factor FF = P_mp / (V_oc × I_sc) measures how square the I–V curve is. Series resistance drops a voltage I·R_s inside the cell, which matters most at high current; shunt resistance leaks a current V/R_sh, which matters most at high voltage. Both round the knee of the curve and lower FF.</p>
+<h2 id="3-module-and-datasheet-data">3. Module and datasheet data</h2>
+<p>The <a href="https://csisolar.co.jp/wp-content/themes/canadian_solar/pdf/CS6K-300MS_v5.571.pdf">Canadian Solar CS6K-300MS</a> (datasheet v5.571) was chosen because it is a common 60-cell monocrystalline module and is also in the CEC module database shipped with pvlib, giving an independent third parameter set to compare against. Values marked "Validation" were held out of the fit.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Value</th>
+<th>Used for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Short-circuit current I_sc (STC)</td>
+<td>9.83 A</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Open-circuit voltage V_oc (STC)</td>
+<td>39.7 V</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Current at max power I_mp (STC)</td>
+<td>9.24 A</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Voltage at max power V_mp (STC)</td>
+<td>32.5 V</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Max power P_max (STC)</td>
+<td>300 W</td>
+<td>Fit (via I_mp × V_mp)</td>
+</tr>
+<tr>
+<td>Cells in series N_s</td>
+<td>60</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Temperature coefficient of I_sc (α)</td>
+<td>+0.05 %/°C</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Temperature coefficient of V_oc (β)</td>
+<td>−0.29 %/°C</td>
+<td>Fit</td>
+</tr>
+<tr>
+<td>Temperature coefficient of P_max (γ)</td>
+<td>−0.39 %/°C</td>
+<td>Validation</td>
+</tr>
+<tr>
+<td>NOCT point (800 W/m², 42 °C): P_max / V_mp / I_mp</td>
+<td>222 W / 30.0 V / 7.40 A</td>
+<td>Validation</td>
+</tr>
+<tr>
+<td>NOCT point: V_oc / I_sc</td>
+<td>37.2 V / 7.93 A</td>
+<td>Validation</td>
+</tr>
+<tr>
+<td>Relative efficiency at 200 W/m² vs 1000 W/m²</td>
+<td>97.5 %</td>
+<td>Validation</td>
+</tr>
+</tbody>
+</table></div>
+<p>The NOCT operating point is given at 20 °C ambient, 1 m/s wind; the datasheet's nominal module temperature for these conditions, 42 °C, was used as the cell temperature.</p>
+<h2 id="4-methodology">4. Methodology</h2>
+<h3 id="41-parameter-extraction">4.1 Parameter extraction</h3>
+<p>The datasheet supplies three points and one slope condition, only four equations for five unknowns. The fifth comes from the V_oc temperature coefficient, the same closure used by the CEC/SAM database:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Condition</th>
+<th>Equation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Short circuit</td>
+<td>I(0) = I_sc</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Open circuit</td>
+<td>I(V_oc) = 0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Maximum power point</td>
+<td>I(V_mp) = I_mp</td>
+</tr>
+<tr>
+<td>4</td>
+<td>MPP is a maximum (dP/dV = 0)</td>
+<td>dI/dV at MPP = −I_mp / V_mp</td>
+</tr>
+<tr>
+<td>5</td>
+<td>V_oc temperature coefficient</td>
+<td>V_oc(25 °C + ΔT) = V_oc + β·ΔT, with ΔT = 2 K</td>
+</tr>
+</tbody>
+</table></div>
+<p>The slope in equation 4 comes from implicit differentiation of the diode equation: dI/dV = −g / (1 + R_s·g), where g = (I₀/a)·exp((V + I·R_s)/a) + 1/R_sh. Equation 5 evaluates V_oc with the De Soto translation and a bracketed root search (<code>brentq</code>).</p>
+<p>The system was solved with <code>scipy.optimize.least_squares</code> (trust-region reflective, with bounds). Three choices made it robust:</p>
+<ul>
+<li><strong>Log variables.</strong> I₀ (about 1e-11 A) and R_sh were solved as ln I₀ and ln R_sh, so all unknowns are of similar size.</li>
+<li><strong>Dimensionless residuals.</strong> Current residuals were divided by I_sc, the slope residual by I_mp/V_mp, and the voltage residual by V_oc.</li>
+<li><strong>Generic start.</strong> n = 1.1, R_s = 0.3 Ω, R_sh = 300 Ω, I_ph = I_sc, with I₀ from the open-circuit condition. Bounds kept n in 0.7–2 and R_s in 0–2 Ω.</li>
+</ul>
+<h3 id="42-solving-for-current">4.2 Solving for current</h3>
+<p>Two independent solvers were written and compared over 400 voltages from 0 to V_oc:</p>
+<ul>
+<li><strong>Lambert W</strong>, in log space as described in section 2.2.</li>
+<li><strong>Newton–Raphson</strong> on f(I) = 0. Because f is decreasing and concave in I, a start at I = I_ph (where f &lt; 0) converges monotonically without damping.</li>
+</ul>
+<h3 id="43-verification-against-pvlib">4.3 Verification against pvlib</h3>
+<p>The same datasheet inputs were passed to <code>pvlib.ivtools.sdm.fit_desoto</code>, and the fitted parameters were translated to 600 W/m², 50 °C with both this code and <code>pvlib.pvsystem.calcparams_desoto</code>, then solved with <code>pvlib.pvsystem.singlediode</code>. pvlib's fitter uses an unbounded root finder that failed from its default start for this module, so it was given a rounded starting guess.</p>
+<h3 id="44-sweeps-and-maximum-power-point">4.4 Sweeps and maximum power point</h3>
+<p>Curves were computed for irradiance 200, 400, 600, 800 and 1000 W/m² at 25 °C, and for temperature 0, 25, 50 and 75 °C at 1000 W/m². At each condition the MPP was found by maximising P = V·I(V) with bounded scalar minimisation (<code>minimize_scalar</code>, tolerance 1e-8 V) between 0 and V_oc.</p>
+<h3 id="45-validation">4.5 Validation</h3>
+<p>Model output was compared with held-out datasheet values: the NOCT operating point; γ, obtained from a linear fit of P_mp over 0–75 °C at 1000 W/m²; and relative efficiency at 200 W/m².</p>
+<h3 id="46-fill-factor-study">4.6 Fill factor study</h3>
+<p>With I_ph, I₀ and n fixed at their fitted values, R_s was swept from 0 to 1.5 Ω and R_sh from 10 to 5000 Ω (log spaced), one at a time and on a 31 × 31 grid, recording FF at STC.</p>
+<h2 id="5-results">5. Results</h2>
+<h3 id="51-extracted-parameters-and-verification">5.1 Extracted parameters and verification</h3>
+<p>The fit converged with a largest residual of 1.7e-15, and every parameter matches pvlib's independent fit to within 4e-7 %.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>This work</th>
+<th>pvlib fit_desoto</th>
+<th>CEC database</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>I_ph (A)</td>
+<td>9.842</td>
+<td>9.842</td>
+<td>9.702</td>
+</tr>
+<tr>
+<td>I₀ (A)</td>
+<td>2.240e-11</td>
+<td>2.240e-11</td>
+<td>7.212e-11</td>
+</tr>
+<tr>
+<td>n (per cell)</td>
+<td>0.961</td>
+<td>0.961</td>
+<td>1.005</td>
+</tr>
+<tr>
+<td>a = n·N_s·V_t (V)</td>
+<td>1.482</td>
+<td>1.482</td>
+<td>1.549</td>
+</tr>
+<tr>
+<td>R_s (Ω)</td>
+<td>0.288</td>
+<td>0.288</td>
+<td>0.263</td>
+</tr>
+<tr>
+<td>R_sh (Ω)</td>
+<td>235.3</td>
+<td>235.3</td>
+<td>1117</td>
+</tr>
+</tbody>
+</table></div>
+<p>The CEC entry differs because it was fitted to an older datasheet revision (I_sc = 9.70 A, I_mp = 9.20 A, V_mp = 32.6 V) and uses a sixth adjustment parameter; the difference is in the inputs, not the method.</p>
+<p>Further checks:</p>
+<ul>
+<li>Lambert W and Newton–Raphson currents agree to <strong>1.6e-14 A</strong> across the full curve.</li>
+<li>The model returns I(0) = 9.8300 A, I(V_mp) = 9.2400 A and I(V_oc) ≈ 4e-15 A, reproducing the datasheet points exactly.</li>
+<li>At 600 W/m², 50 °C, this code and pvlib give identical translated parameters and the same P_mp of <strong>165.726 W</strong>.</li>
+</ul>
+<h3 id="52-iv-and-pv-curves">5.2 I–V and P–V curves</h3>
+<p>Irradiance scales the current almost linearly, while temperature mainly shifts the voltage: V_oc falls from 42.6 V at 0 °C to 33.9 V at 75 °C, and P_mp falls from 326 W to 247 W.</p>
+<figure><img alt="I–V and P–V curves vs irradiance and temperature" src="figures/iv_pv_curves.png" /><figcaption>Figure 1. I–V (top) and P–V (bottom) curves for 200–1000 W/m² at 25 °C (left) and 0–75 °C at 1000 W/m² (right). Dots mark the maximum power point.</figcaption></figure>
+<h3 id="53-maximum-power-point">5.3 Maximum power point</h3>
+<p>P_mp ranges from 48 W (200 W/m², 75 °C) to 326 W (1000 W/m², 0 °C). V_mp stays near 32–33 V across irradiance at 25 °C, which is why simple MPPT algorithms can track a narrow voltage window. The full grid is in <a href="figures/mpp_grid.csv"><code>figures/mpp_grid.csv</code></a>.</p>
+<figure><img alt="Maximum power heatmap" src="figures/mpp_heatmap.png" /><figcaption>Figure 2. Maximum power (W) for every irradiance and temperature combination.</figcaption></figure>
+<h3 id="54-validation-against-held-out-datasheet-values">5.4 Validation against held-out datasheet values</h3>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Quantity (not used in fit)</th>
+<th>Datasheet</th>
+<th>Model</th>
+<th>Error</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P_max at NOCT</td>
+<td>222 W</td>
+<td>227.3 W</td>
+<td><strong>+2.4 %</strong></td>
+</tr>
+<tr>
+<td>V_mp at NOCT</td>
+<td>30.0 V</td>
+<td>30.6 V</td>
+<td>+2.0 %</td>
+</tr>
+<tr>
+<td>I_mp at NOCT</td>
+<td>7.40 A</td>
+<td>7.43 A</td>
+<td>+0.4 %</td>
+</tr>
+<tr>
+<td>V_oc at NOCT</td>
+<td>37.2 V</td>
+<td>37.4 V</td>
+<td>+0.5 %</td>
+</tr>
+<tr>
+<td>I_sc at NOCT</td>
+<td>7.93 A</td>
+<td>7.93 A</td>
+<td>+0.0 %</td>
+</tr>
+<tr>
+<td>γ, P_max temperature coefficient</td>
+<td>−0.39 %/°C</td>
+<td>−0.353 %/°C</td>
+<td>−9.5 %</td>
+</tr>
+<tr>
+<td>Relative efficiency at 200 W/m²</td>
+<td>97.5 %</td>
+<td>99.3 %</td>
+<td>+1.8 points</td>
+</tr>
+</tbody>
+</table></div>
+<p>The coefficients that were part of the fit come back as expected: β = −0.291 %/°C (datasheet −0.29) and α = +0.050 %/°C (datasheet +0.05). At STC every fitted quantity matches to 0.00 %, which confirms the solver but is not evidence of accuracy.</p>
+<figure><img alt="P_mp vs temperature" src="figures/pmp_vs_temperature.png" /><figcaption>Figure 3. P_mp against cell temperature at 1000 W/m². The model's slope (γ = −0.353 %/°C) is shallower than the datasheet's −0.39 %/°C.</figcaption></figure>
+<h3 id="55-effect-of-series-and-shunt-resistance-on-fill-factor">5.5 Effect of series and shunt resistance on fill factor</h3>
+<p>The fitted module has FF = 0.770, matching the datasheet value of 0.7695. FF falls almost linearly with R_s, from 0.832 at 0 Ω to 0.522 at 1.5 Ω, about 0.21 per ohm. It is insensitive to R_sh above a few hundred ohms (0.779 at 5000 Ω, 0.768 at 200 Ω) but collapses below about 50 Ω (0.660 at 20 Ω, 0.54 at 10 Ω).</p>
+<figure><img alt="Fill factor vs series and shunt resistance" src="figures/fill_factor_resistances.png" /><figcaption>Figure 4. Fill factor against R_s and R_sh (top), and I–V curves showing R_s tilting the voltage side of the knee and R_sh tilting the current plateau (bottom).</figcaption></figure>
+<figure><img alt="Fill factor map" src="figures/fill_factor_map.png" /><figcaption>Figure 5. Fill factor over the (R_s, R_sh) plane; the dot marks the fitted module.</figcaption></figure>
+<p>This module sits where FF is far more sensitive to R_s than to R_sh: a 0.1 Ω increase in R_s costs about 2 FF points, roughly what a fall in R_sh from 235 Ω to 100 Ω would cost.</p>
+<h2 id="6-discussion">6. Discussion</h2>
+<p>The implementation is correct; the remaining errors come from the five-parameter model itself.</p>
+<p><strong>Accuracy at NOCT.</strong> The model over-predicts NOCT power by 2.4 %, almost entirely through V_mp (+2.0 %) rather than current (+0.4 %). Two effects contribute. First, the model's temperature sensitivity of power is too weak (below), and NOCT is 17 °C above STC. Second, the datasheet NOCT row is a measured module result that includes losses (spectral and angular effects, real module temperature distribution) the model does not represent.</p>
+<p><strong>Temperature coefficient of power.</strong> The model gives γ = −0.353 %/°C against −0.39 %/°C. The De Soto model is constrained only by α (current) and β (voltage); how the fill factor changes with temperature is left to the diode physics. A single diode with n fixed and R_s constant underestimates the fill-factor loss as the cell heats. The CEC/SAM six-parameter model exists largely to correct this: its "Adjust" parameter tunes the temperature behaviour so that γ also matches.</p>
+<p><strong>Low irradiance.</strong> Relative efficiency at 200 W/m² is over-predicted (99.3 % vs 97.5 %). In the model, R_sh rises as 1/G, so shunt losses shrink at low light, and the I²R_s loss shrinks with current, so efficiency barely drops. Real modules lose more at low light, through effects such as second-diode recombination that a single diode does not capture.</p>
+<p><strong>Ideality factor below 1.</strong> The fit gives n = 0.961 per cell, slightly below the ideal-diode value of 1. This is an effective, fitted parameter, not a measured one: forcing the model to reproduce β exactly pulls n down. The CEC fit to an older datasheet gives n = 1.005, showing how sensitive n is to small input changes.</p>
+<p><strong>Low shunt resistance.</strong> The fitted R_sh of 235 Ω is about five times lower than the CEC value. R_sh is set mainly by the slope condition at the MPP, and small changes in the datasheet I_mp and V_mp move it a lot. In section 5.5 the fill factor is insensitive to R_sh in this range, so this uncertainty has little effect on predicted power.</p>
+<p><strong>Numerical robustness.</strong> pvlib's fitter, which uses an unbounded root finder, failed from its default start for this module and needed a starting guess close to the answer. The bounded least-squares formulation with log-scaled variables converged from a generic start, which matters if the method is to be applied to many modules automatically.</p>
+<h2 id="7-conclusion-and-future-work">7. Conclusion and future work</h2>
+<p>A single-diode model fitted only to STC values and two temperature coefficients predicts the NOCT maximum power of the CS6K-300MS within 2.4 %, and its implementation matches pvlib to machine precision. Its weaknesses are a 10 % underestimate of the power temperature coefficient and optimistic low-light efficiency, both known limits of the five-parameter model. Series resistance dominates fill-factor sensitivity for this module: each 0.1 Ω costs about 2 FF points.</p>
+<p>Possible extensions:</p>
+<ul>
+<li>Fit n = 1 and drop the β equation, then compare γ and NOCT errors with this fit.</li>
+<li>Add the CEC "Adjust" parameter, or a second diode, and test whether γ and low-light efficiency improve.</li>
+<li>Make R_s depend on temperature and irradiance.</li>
+<li>Validate against measured I–V curves (for example NREL's public module datasets) instead of datasheet points.</li>
+<li>Repeat the fit across many modules in the CEC database to study the spread of n and R_sh.</li>
+</ul>
+<h2 id="references">References</h2>
+<ol>
+<li>W. De Soto, S. A. Klein, W. A. Beckman, "Improvement and validation of a model for photovoltaic array performance", <em>Solar Energy</em> 80(1), 78–88, 2006.</li>
+<li>A. Jain, A. Kapoor, "Exact analytical solutions of the parameters of real solar cells using Lambert W-function", <em>Solar Energy Materials and Solar Cells</em> 81(2), 269–277, 2004.</li>
+<li>A. P. Dobos, "An improved coefficient calculator for the California Energy Commission 6 parameter photovoltaic module model", <em>Journal of Solar Energy Engineering</em> 134(2), 2012.</li>
+<li>K. S. Anderson et al., "pvlib python: 2023 project update", <em>Journal of Open Source Software</em> 8(92), 5994, 2023. <a href="https://pvlib-python.readthedocs.io">pvlib documentation</a></li>
+<li>Canadian Solar, <a href="https://csisolar.co.jp/wp-content/themes/canadian_solar/pdf/CS6K-300MS_v5.571.pdf">CS6K-300MS datasheet v5.571</a>.</li>
+</ol>
+<footer>Single-diode PV model · Python, SciPy, pvlib</footer>
+</main>
+</body>
+</html>
