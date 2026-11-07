@@ -4,7 +4,7 @@
 
 A from-scratch Python implementation of the 5-parameter single-diode model for a real PV module (Canadian Solar CS6K-300MS, 60-cell mono-Si, 300 W), checked against `pvlib` and validated against datasheet values the model was not fitted to.
 
-**[Read the full project report](REPORT.md)** · [Web version](https://YOUR-USERNAME.github.io/solar-iv-model/)
+**[Read the full project report](REPORT.md)**
 
 ![I–V and P–V curves](figures/iv_pv_curves.png)
 
