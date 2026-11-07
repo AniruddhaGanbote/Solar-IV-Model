@@ -1,6 +1,6 @@
 # Solar cell I–V curve modelling (single-diode model)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR-USERNAME/solar-iv-model/blob/main/solar_iv_model.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AniruddhaGanbote/solar-iv-model/blob/main/solar_iv_model.ipynb)
 
 A from-scratch Python implementation of the 5-parameter single-diode model for a real PV module (Canadian Solar CS6K-300MS, 60-cell mono-Si, 300 W), checked against `pvlib` and validated against datasheet values the model was not fitted to.
 
